@@ -26,6 +26,8 @@ import io.trino.orc.OrcWriter;
 import io.trino.orc.OrcWriterOptions;
 import io.trino.orc.OrcWriterStats;
 import io.trino.orc.OutputStreamOrcDataSink;
+import io.trino.parquet.cache.CachingParquetMetadataSource;
+import io.trino.parquet.cache.ParquetCacheConfig;
 import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HiveTransactionHandle;
@@ -99,6 +101,7 @@ public class TestIcebergNodeLocalDynamicSplitPruning
     private static final OrcWriterConfig ORC_WRITER_CONFIG = new OrcWriterConfig();
     private static final ParquetReaderConfig PARQUET_READER_CONFIG = new ParquetReaderConfig();
     private static final ParquetWriterConfig PARQUET_WRITER_CONFIG = new ParquetWriterConfig();
+    private static final ParquetCacheConfig parquetCacheConfig = new ParquetCacheConfig();
 
     @Test
     public void testDynamicSplitPruning()
@@ -195,7 +198,7 @@ public class TestIcebergNodeLocalDynamicSplitPruning
                 new JsonCodecFactory().jsonCodec(CommitTaskData.class),
                 new IcebergFileWriterFactory(HDFS_ENVIRONMENT, TESTING_TYPE_MANAGER, new NodeVersion("trino_test"), stats, ORC_WRITER_CONFIG),
                 new GroupByHashPageIndexerFactory(new JoinCompiler(TESTING_TYPE_MANAGER.getTypeOperators()), new BlockTypeOperators()),
-                icebergConfig);
+                icebergConfig, new CachingParquetMetadataSource(), parquetCacheConfig);
 
         return provider.createPageSource(
                 transaction,

@@ -34,6 +34,10 @@ public interface ParquetDataSource
 
     Slice readFully(long position, int length);
 
+    void readFully(long position, byte[] buffer);
+
+    void readFully(long position, byte[] buffer, int bufferOffset, int bufferLength);
+
     <K> ListMultimap<K, ChunkReader> planRead(ListMultimap<K, DiskRange> diskRanges);
 
     @Override
