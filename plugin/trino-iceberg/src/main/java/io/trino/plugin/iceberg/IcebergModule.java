@@ -13,10 +13,20 @@
  */
 package io.trino.plugin.iceberg;
 
+import com.google.common.cache.CacheBuilder;
 import com.google.inject.Binder;
 import com.google.inject.Module;
+import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.multibindings.Multibinder;
+import io.airlift.jmx.CacheStatsMBean;
+import io.trino.collect.cache.NonEvictableCache;
+import io.trino.parquet.ParquetDataSourceId;
+import io.trino.parquet.cache.CachingParquetMetadataSource;
+import io.trino.parquet.cache.ParquetCacheConfig;
+import io.trino.parquet.cache.ParquetFileMetadata;
+import io.trino.parquet.cache.ParquetMetadataSource;
+import io.trino.parquet.reader.MetadataReader;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
 import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.HiveConfig;
@@ -34,16 +44,29 @@ import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.TableProcedureMetadata;
 import io.trino.spi.procedure.Procedure;
+import org.weakref.jmx.MBeanExporter;
+
+import javax.inject.Singleton;
 
 import static com.google.inject.multibindings.Multibinder.newSetBinder;
 import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
 import static io.airlift.configuration.ConfigBinder.configBinder;
 import static io.airlift.json.JsonCodecBinder.jsonCodecBinder;
+import static io.trino.collect.cache.SafeCaches.buildNonEvictableCache;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static org.weakref.jmx.ObjectNames.generatedNameOf;
 import static org.weakref.jmx.guice.ExportBinder.newExporter;
 
 public class IcebergModule
         implements Module
 {
+    private final String connectorId;
+
+    public IcebergModule(String connectorId)
+    {
+        this.connectorId = connectorId;
+    }
+
     @Override
     public void configure(Binder binder)
     {
@@ -52,7 +75,7 @@ public class IcebergModule
         configBinder(binder).bindConfig(HiveConfig.class);
         configBinder(binder).bindConfig(IcebergConfig.class);
         configBinder(binder).bindConfig(MetastoreConfig.class);
-
+        configBinder(binder).bindConfig(ParquetCacheConfig.class, connectorId);
         newSetBinder(binder, SessionPropertiesProvider.class).addBinding().to(IcebergSessionProperties.class).in(Scopes.SINGLETON);
         binder.bind(IcebergTableProperties.class).in(Scopes.SINGLETON);
 
@@ -84,5 +107,22 @@ public class IcebergModule
         tableProcedures.addBinding().toProvider(OptimizeTableProcedure.class).in(Scopes.SINGLETON);
         tableProcedures.addBinding().toProvider(ExpireSnapshotsTableProcedure.class).in(Scopes.SINGLETON);
         tableProcedures.addBinding().toProvider(RemoveOrphanFilesTableProcedure.class).in(Scopes.SINGLETON);
+    }
+
+    @Singleton
+    @Provides
+    public ParquetMetadataSource createParquetMetadataSource(ParquetCacheConfig parquetCacheConfig, MBeanExporter exporter)
+    {
+        ParquetMetadataSource parquetMetadataSource = new MetadataReader();
+        if (parquetCacheConfig.isMetadataCacheEnabled()) {
+            NonEvictableCache<ParquetDataSourceId, ParquetFileMetadata> cache = buildNonEvictableCache(CacheBuilder.newBuilder().maximumWeight(parquetCacheConfig.getMetadataCacheSize().toBytes())
+                    .weigher((id, metadata) -> ((ParquetFileMetadata) metadata).getMetadataSize())
+                    .expireAfterAccess(parquetCacheConfig.getMetadataCacheTtlSinceLastAccess().toMillis(), MILLISECONDS)
+                    .recordStats());
+            CacheStatsMBean cacheStatsMBean = new CacheStatsMBean(cache);
+            parquetMetadataSource = new CachingParquetMetadataSource(cache, parquetMetadataSource);
+            exporter.export(generatedNameOf(CacheStatsMBean.class, connectorId + "_ParquetMetadata"), cacheStatsMBean);
+        }
+        return parquetMetadataSource;
     }
 }

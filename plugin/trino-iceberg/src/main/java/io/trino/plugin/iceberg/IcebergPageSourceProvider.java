@@ -34,8 +34,9 @@ import io.trino.parquet.ParquetDataSource;
 import io.trino.parquet.ParquetDataSourceId;
 import io.trino.parquet.ParquetReaderOptions;
 import io.trino.parquet.RichColumnDescriptor;
+import io.trino.parquet.cache.ParquetCacheConfig;
+import io.trino.parquet.cache.ParquetMetadataSource;
 import io.trino.parquet.predicate.Predicate;
-import io.trino.parquet.reader.MetadataReader;
 import io.trino.parquet.reader.ParquetReader;
 import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.HdfsEnvironment;
@@ -184,6 +185,8 @@ public class IcebergPageSourceProvider
     private final IcebergFileWriterFactory fileWriterFactory;
     private final PageIndexerFactory pageIndexerFactory;
     private final int maxOpenPartitions;
+    private final ParquetMetadataSource parquetMetadataSource;
+    private final Boolean parquetCacheEnable;
 
     @Inject
     public IcebergPageSourceProvider(
@@ -196,7 +199,9 @@ public class IcebergPageSourceProvider
             JsonCodec<CommitTaskData> jsonCodec,
             IcebergFileWriterFactory fileWriterFactory,
             PageIndexerFactory pageIndexerFactory,
-            IcebergConfig icebergConfig)
+            IcebergConfig icebergConfig,
+            ParquetMetadataSource parquetMetadataSource,
+            ParquetCacheConfig parquetCacheConfig)
     {
         this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
         this.fileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null");
@@ -209,6 +214,8 @@ public class IcebergPageSourceProvider
         this.pageIndexerFactory = requireNonNull(pageIndexerFactory, "pageIndexerFactory is null");
         requireNonNull(icebergConfig, "icebergConfig is null");
         this.maxOpenPartitions = icebergConfig.getMaxPartitionsPerWriter();
+        this.parquetMetadataSource = requireNonNull(parquetMetadataSource, "parquetMetadataSource is null");
+        this.parquetCacheEnable = requireNonNull(parquetCacheConfig.isMetadataCacheEnabled(), "parquetCacheEnable is null");
     }
 
     @Override
@@ -287,7 +294,8 @@ public class IcebergPageSourceProvider
                 requiredColumns,
                 effectivePredicate,
                 table.getNameMappingJson().map(NameMappingParser::fromJson),
-                partitionKeys);
+                partitionKeys,
+                parquetMetadataSource);
 
         Optional<ReaderProjectionsAdapter> projectionsAdapter = dataPageSource.getReaderColumns().map(readerColumns ->
                 new ReaderProjectionsAdapter(
@@ -359,7 +367,8 @@ public class IcebergPageSourceProvider
             List<IcebergColumnHandle> dataColumns,
             TupleDomain<IcebergColumnHandle> predicate,
             Optional<NameMapping> nameMapping,
-            Map<Integer, Optional<String>> partitionKeys)
+            Map<Integer, Optional<String>> partitionKeys,
+            ParquetMetadataSource parquetMetadataSource)
     {
         if (!isUseFileSizeFromMetadata(session)) {
             try {
@@ -412,7 +421,9 @@ public class IcebergPageSourceProvider
                         predicate,
                         fileFormatDataSourceStats,
                         nameMapping,
-                        partitionKeys);
+                        partitionKeys,
+                        parquetMetadataSource,
+                        parquetCacheEnable);
             default:
                 throw new TrinoException(NOT_SUPPORTED, "File format not supported for Iceberg: " + fileFormat);
         }
@@ -770,17 +781,23 @@ public class IcebergPageSourceProvider
             TupleDomain<IcebergColumnHandle> effectivePredicate,
             FileFormatDataSourceStats fileFormatDataSourceStats,
             Optional<NameMapping> nameMapping,
-            Map<Integer, Optional<String>> partitionKeys)
+            Map<Integer, Optional<String>> partitionKeys,
+            ParquetMetadataSource parquetMetadataSource,
+            Boolean parquetCacheEnable)
     {
         AggregatedMemoryContext memoryContext = newSimpleAggregatedMemoryContext();
 
         ParquetDataSource dataSource = null;
         try {
             FileSystem fileSystem = hdfsEnvironment.getFileSystem(identity, path, configuration);
+            FileStatus fileStatus = fileSystem.getFileStatus(path);
             FSDataInputStream inputStream = hdfsEnvironment.doAs(identity, () -> fileSystem.open(path));
             dataSource = new HdfsParquetDataSource(new ParquetDataSourceId(path.toString()), fileSize, inputStream, fileFormatDataSourceStats, options);
-            ParquetDataSource theDataSource = dataSource; // extra variable required for lambda below
-            ParquetMetadata parquetMetadata = hdfsEnvironment.doAs(identity, () -> MetadataReader.readFooter(theDataSource));
+            ParquetMetadata parquetMetadata = parquetMetadataSource.getParquetMetadata(
+                    dataSource,
+                    fileSize,
+                    parquetCacheEnable,
+                    fileStatus.getModificationTime()).getParquetMetadata();
             FileMetaData fileMetaData = parquetMetadata.getFileMetaData();
             MessageType fileSchema = fileMetaData.getSchema();
             if (nameMapping.isPresent() && !ParquetSchemaUtil.hasIds(fileSchema)) {
