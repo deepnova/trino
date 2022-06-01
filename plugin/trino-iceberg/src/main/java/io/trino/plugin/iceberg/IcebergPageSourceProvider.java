@@ -215,7 +215,7 @@ public class IcebergPageSourceProvider
         requireNonNull(icebergConfig, "icebergConfig is null");
         this.maxOpenPartitions = icebergConfig.getMaxPartitionsPerWriter();
         this.parquetMetadataSource = requireNonNull(parquetMetadataSource, "parquetMetadataSource is null");
-        this.parquetCacheEnable = requireNonNull(parquetCacheConfig.isMetadataCacheEnabled(), "parquet cacheenable");
+        this.parquetCacheEnable = requireNonNull(parquetCacheConfig.isMetadataCacheEnabled(), "parquetCacheEnable is null");
     }
 
     @Override
